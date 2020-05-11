@@ -1,0 +1,215 @@
+---
+title: "DATA 607: Final Project"
+author: " Chunsan Yip"
+date: "5/10/2020"
+output:
+ html_document:
+    toc: true # table of content true
+    toc_depth: 3  # upto three depths of headings (specified by #, ## and ###)
+    toc_float: true
+    #number_sections: true  ## if you want number sections at each table header
+    #theme: united  # many options for theme, this one is my favorite.
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(readr)
+library(lubridate)
+library(recommenderlab)
+library(ggplot2)
+library(caret)
+library(randomForest)
+```
+
+# Introduction
+My company is spending a lot of money on Digital Marketing and I am the main person to purchase impressions and clicks from online media. While I am using an agency to purchase for us, I would like to find out the relationship between click and demography of users. I need to build a predictor model or build a basic recommender. It will help me to understand how to target audience for online advertisement purchase.
+
+Initially, I was going to use the following as mentioned in my proposal:
+https://labs.criteo.com/2014/02/download-dataset/. The dataset doesn't have column names and I don't know what it means.
+
+I download another dataset from Taobao/Alimama which is a subsidiary of Alibaba. 
+
+# Overall Process
+OSEMN Process
+1. Obtain Data
+2. Scrub Data
+3. Explore Data
+4. Model Data
+5. Interpret Results
+
+# Data gathering
+```{r Gather data, message=FALSE}
+#Create a function to extract and read CSV. Download to local drive method.
+
+exCSV <- function(theUrl){
+  fname <- str_extract(theUrl, "[^/]+(?=\\.tar.gz$)")
+  untar(theUrl, files=fname, exdir="C:/Users/dansa/Documents/")
+  read_csv(file=fname, na = c("", "NA"))
+}
+
+
+#Set the working directory from which the files will be read from
+setwd("C:/Users/dansa/Documents/")
+
+theUrl1 <- "C:/Users/dansa/Documents/user_profile.csv.tar.gz"
+theUrl2 <- "C:/Users/dansa/Documents/ad_feature.csv.tar.gz"
+theUrl3 <- "C:/Users/dansa/Documents/raw_sample.csv.tar.gz"
+
+userProfile <- exCSV(theUrl1)
+adFeature <- exCSV(theUrl2)
+rawSample <- exCSV(theUrl3)
+```
+
+# Scrub and tidy up the data for analysis
+```{r}
+#Rename columns according to the definition of columns
+
+userProfile1 <- userProfile %>%
+  dplyr:: rename("user"=userid,        
+                 "cms_seg"= cms_segid,
+                 "cms_group"=cms_group_id, 
+                 "gender"=final_gender_code,
+                 "age_group"=age_level,
+                 "purchase_level"=pvalue_level,
+                 "college_graduate"=occupation,
+                 "city_type"=new_user_class_level)%>%
+  select(-starts_with("cms"))
+
+adFeature1 <- adFeature %>%
+  dplyr:: rename("ad"=adgroup_id,        
+                 "category"=cate_id,
+                 "campaign"=campaign_id, 
+                 "ad_customer"=customer,
+                 ) #The price for the product, a product represented by an ad, a product belongs to a cateogry and a brand
+
+rawSample1 <- rawSample %>%
+  dplyr:: rename("ad"=adgroup_id,        
+                 "ad_location"=pid,
+                 "click"=clk
+                ) %>%
+  mutate("date" = as.Date(as_datetime(time_stamp))) %>%
+  select(-nonclk, -time_stamp) #nonclk and clk are complement column. nonclk is removed.#The price for the product, a product represented by an ad, a product belongs to a cateogry and a brand
+#  mutate(total_click = nonclk + clk) 
+```
+
+# Exploring the dataset
+```{r}
+#Even though I tried to make use of all the data, my computer keeps giving me error message on file size. I decides to scale down the dataset by just pick up one tenth of the data. 
+set.seed(1001)
+randRawSam <- rawSample1[sample(nrow(rawSample1), 2655000),] 
+
+#The adfeature and raw sample dataframe are joined together
+rawad <- randRawSam %>%
+  left_join(adFeature1, by="ad")
+
+#The user profile and raw sample dataframe are joined together
+rawuser <- randRawSam %>%
+  left_join(userProfile1, by="user")%>%
+  select(-user, -ad_location, -date)%>%
+  na.omit()
+
+```
+
+```{r}
+#Create functions to change datasets and to plot top 20 set case by product category, brand, campaign and ad customer
+
+sum20 <- function(xvar){ 
+df<-rawad%>%
+  mutate(xvar=sapply(xvar, as.factor))%>%
+  group_by(xvar)%>%
+  summarize(n=n())%>%
+  arrange(desc(n))%>%
+  top_n(20)
+return(df)
+}
+  
+plotsum20 <- function(dfsum20){
+ggplot(dfsum20)+
+  geom_col(mapping=aes(x=fct_reorder(xvar,n), y=n))+
+  coord_flip()+
+  ggtitle(paste("Top 20 "))
+}
+
+r <- vector(mode = "list", length = 4)
+
+for(i in 1:4){
+ r[[i]] <- sum20(rawad[,(i+5)])
+}
+
+plotsum20(r[[1]])
+plotsum20(r[[2]])
+plotsum20(r[[3]])
+plotsum20(r[[4]])
+
+#Calculate the click %
+mean(rawad$click)
+```
+The click rate is about 5% which is high against the industrial benchmark of 1% as we normal purchase.
+
+
+
+# Analysis Section. 
+##Both Regression and classification approaches are implemented to model and predict results. 
+Create model and predictor by Random Forest and Logistic Regression. 
+```{r}
+#Prepare matrix for recommender
+# split data into testing & training
+set.seed(1234)
+
+# 80-20 train/test split 
+training_indexs <- createDataPartition(rawuser$click, p = .2, list = F)
+training <- rawuser[training_indexs, ]
+testing  <- rawuser[-training_indexs, ]
+predictors <- training %>% select(-click) %>% as.matrix()
+output <- training$click %>% as.factor()
+str(output)
+class(output)
+
+model <- randomForest(x = predictors, y = output,
+                      ntree = 50) # number of trees
+
+# check out the details
+model
+
+#rmse(predict(model, testing), testing$click)
+
+tuned_model <- train(x = predictors, y = output,
+                     ntree = 5, # number of trees (passed ot random forest)
+                     method = "rf") # random forests
+
+print(tuned_model)
+ggplot(tuned_model)
+
+
+modelGLM <- glm(click ~.,family=binomial(link='logit'),data=training)
+
+#By using function summary() we obtain the results of our model:
+
+summary(modelGLM)
+
+anova(modelGLM, test="Chisq")
+```
+It is very interesting to find out Only gender and college educated have significant impact to click.
+
+
+##Building a model by the Recommender Packages
+```{r}
+m <- randRawSam %>%
+ select(user, ad, click)
+m_matrix <- as.matrix(m)
+m_R <- as(m_matrix, "realRatingMatrix")
+
+mm_R <- Recommender(m_R[1:1000],method="Popular")
+```
+
+Prediction by Recommender Packages as classification problem 
+```{r}
+recommm_R <- predict(mm_R, m_R[111:120], type="ratings")
+recommm_R
+as(recommm_R, "matrix")[,1:2]
+```
+
+# Conclusion
+A dataset for online advertising was used from Taobao which is an online shopping mall similar to Amazon.com. Both regression and classification was used fo analysis. Only gender and college educated are signigicant factors to determine if a click will happen based on the dataset.
